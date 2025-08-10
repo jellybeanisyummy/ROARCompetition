@@ -17,6 +17,9 @@ import atexit
 
 # from scipy.interpolate import interp1d
 
+# Store the directory path at module load time
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+
 useDebug = True
 useDebugPrinting = False
 debugData = {}
@@ -54,7 +57,7 @@ def saveDebugData():
         print("Saving debug data")
         jsonData = json.dumps(debugData, indent=4)
         with open(
-            f"{os.path.dirname(__file__)}\\debugData\\debugData.json", "w+"
+            os.path.join(SCRIPT_DIR, "debugData", "debugData.json"), "w+"
         ) as outfile:
             outfile.write(jsonData)
         print("Debug Data Saved")
@@ -92,7 +95,7 @@ class RoarCompetitionSolution:
         # NOTE waypoints are changed through this line
         self.maneuverable_waypoints = (
             roar_py_interface.RoarPyWaypoint.load_waypoint_list(
-                np.load(f"{os.path.dirname(__file__)}\\waypoints\\waypointsPrimary.npz")
+                np.load(os.path.join(SCRIPT_DIR, "waypoints", "waypointsPrimary.npz"))
             )[35:]
         )
 

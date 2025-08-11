@@ -39,7 +39,11 @@ def to_points(debug_dict: dict):
         loc = v.get("loc")
         speed = v.get("speed")
         lap = v.get("lap")
-        section = v.get("section")
+        # Prefer stable section_id; fallback to legacy section index if absent
+        sec_val = v.get("section_id")
+        if sec_val is None:
+            sec_val = v.get("section")
+        section = sec_val
         section_ticks = v.get("section_ticks")
         if (
             isinstance(loc, (list, tuple))
@@ -76,6 +80,11 @@ def main():
         print("No laps found in debug data.")
         return
 
+
+    # --- Mode state ---
+    mode_names = ["Speed mode", "Throttle/Brake mode"]
+    mode = [0]  # mutable for closure (0=speed, 1=throttle/brake)
+
     # Build interactive figure
     fig, ax = plt.subplots(figsize=(11, 11))
     plt.subplots_adjust(left=0.08, right=0.95, bottom=0.18)
@@ -84,7 +93,13 @@ def main():
     ax.axis((-1100, 1100, -1100, 1100))
 
     colors6 = ["purple", "blue", "green", "yellow", "orange", "red"]
-    cmap = mcolors.ListedColormap(colors6)
+    # Continuous gradient between the six anchor colors
+    cmap = mcolors.LinearSegmentedColormap.from_list("speed_grad", colors6, N=256)
+
+    # Throttle/Brake colormap: 0=none, 1=throttle, 2=brake
+    tb_cmap = mcolors.ListedColormap(["#cccccc", "#00cc44", "#cc2222"])
+    tb_bounds = [0, 1, 2, 3]
+    tb_norm = mcolors.BoundaryNorm(tb_bounds, tb_cmap.N)
 
     current_idx = 0
     sec_markers = []
@@ -92,14 +107,32 @@ def main():
     cbar = None
 
     def compute_boundaries(_speeds_arr: np.ndarray):
-        # Fixed bands from 0 to 300 km/h into 6 bins
+        # Fixed 0 to 300 km/h range with continuous gradient; labeled ticks at thresholds
         boundaries = np.linspace(0.0, 300.0, 7)
-        norm_local = mcolors.BoundaryNorm(boundaries, ncolors=cmap.N, clip=True)
-        # Ticks at bin midpoints; last label uses '+' to indicate open-ended
-        mids = (boundaries[:-1] + boundaries[1:]) / 2.0
-        labels = [f"{boundaries[i]:.0f}–{boundaries[i+1]:.0f}" for i in range(len(boundaries) - 2)]
-        labels.append(f"{boundaries[-2]:.0f}+")
-        return boundaries, norm_local, mids, labels
+        norm_local = mcolors.Normalize(vmin=0.0, vmax=300.0, clip=True)
+        # Place ticks at the boundaries except the last, and label the last one as "+"
+        ticks = boundaries[:-1]
+        labels = [f"{int(v)}" for v in ticks[:-1]] + [f"{int(ticks[-1])}+"]
+        return boundaries, norm_local, ticks, labels
+
+
+    # Helper to get throttle/brake arrays for a lap
+    def get_tb_arrays(lap_pts, debug_dict):
+        throttle = []
+        brake = []
+        for p in lap_pts:
+            tick = p[6]
+            v = debug_dict.get(str(tick), {})
+            throttle.append(v.get("throttle", 0))
+            brake.append(v.get("brake", 0))
+        return np.array(throttle), np.array(brake)
+
+    # Helper to get tb_mode color array: 0=none, 1=throttle, 2=brake
+    def get_tb_colors(throttle, brake):
+        arr = np.zeros_like(throttle, dtype=int)
+        arr[throttle > 0] = 1
+        arr[brake > 0] = 2
+        return arr
 
     # Initialize with first lap
     init_lap = laps[current_idx]
@@ -107,22 +140,30 @@ def main():
     x_coords = np.array([p[1] for p in init_pts])
     y_coords = np.array([p[2] for p in init_pts])
     speeds = np.array([p[3] for p in init_pts])
+    throttle, brake = get_tb_arrays(init_pts, debug_dict)
+    tb_colors = get_tb_colors(throttle, brake)
 
     if speeds.size == 0:
         speeds = np.array([0.0])
         x_coords = np.array([0.0])
         y_coords = np.array([0.0])
+        tb_colors = np.array([0])
 
-    boundaries, norm, mids, labels = compute_boundaries(speeds)
+    boundaries, norm, ticks, labels = compute_boundaries(speeds)
     sc = ax.scatter(x_coords, y_coords, c=speeds, cmap=cmap, norm=norm, s=10)
-    cbar = fig.colorbar(sc, ax=ax, boundaries=boundaries)
-    cbar.set_ticks(mids)
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_ticks(ticks)
     cbar.set_ticklabels(labels)
     cbar.set_label("Speed (km/h)")
     ax.set_title(f"Lap {init_lap}")
 
+
     # Bottom lap label (e.g., "Lap 1/3")
     lap_label = fig.text(0.5, 0.085, f"Lap {current_idx + 1}/{len(laps)}", ha="center", va="center")
+
+    # Mode toggle button
+    ax_mode = plt.axes([0.12, 0.12, 0.12, 0.05])
+    btn_mode = Button(ax_mode, mode_names[mode[0]])
 
     # Precompute cumulative time (ticks) per lap using section_ticks with reset at each section
     lap_time_data = {}
@@ -239,10 +280,10 @@ def main():
     draw_sections(init_pts)
 
     # Update function when changing lap
-    def update_to_index(idx: int):
+    def update_to_index(idx: int, force: bool = False):
         nonlocal current_idx, cbar, norm
         idx = max(0, min(idx, len(laps) - 1))
-        if idx == current_idx:
+        if idx == current_idx and not force:
             return
         current_idx = idx
         lap = laps[current_idx]
@@ -251,35 +292,59 @@ def main():
         xs = np.array([p[1] for p in lap_pts])
         ys = np.array([p[2] for p in lap_pts])
         sp = np.array([p[3] for p in lap_pts])
+        throttle, brake = get_tb_arrays(lap_pts, debug_dict)
+        tb_colors = get_tb_colors(throttle, brake)
         if sp.size == 0:
             xs = np.array([0.0])
             ys = np.array([0.0])
             sp = np.array([0.0])
+            tb_colors = np.array([0])
 
-        # Update scatter data
-        sc.set_offsets(np.column_stack([xs, ys]))
-        sc.set_array(sp)
-
-        # Update colormap/norm & colorbar to reflect current lap's speed range
-        boundaries_new, norm_new, mids_new, labels_new = compute_boundaries(sp)
-        sc.set_norm(norm_new)
-        sc.set_cmap(cmap)
-        # Replace colorbar
-        if cbar is not None:
-            try:
-                cbar.remove()
-            except Exception:
-                pass
-        cbar = fig.colorbar(sc, ax=ax, boundaries=boundaries_new)
-        cbar.set_ticks(mids_new)
-        cbar.set_ticklabels(labels_new)
-        cbar.set_label("Speed (km/h)")
+        # Update scatter data and colorbar depending on mode
+        if mode[0] == 0:
+            sc.set_offsets(np.column_stack([xs, ys]))
+            sc.set_array(sp)
+            boundaries_new, norm_new, ticks_new, labels_new = compute_boundaries(sp)
+            sc.set_norm(norm_new)
+            sc.set_cmap(cmap)
+            if cbar is not None:
+                try:
+                    cbar.remove()
+                except Exception:
+                    pass
+            cbar = fig.colorbar(sc, ax=ax)
+            cbar.set_ticks(ticks_new)
+            cbar.set_ticklabels(labels_new)
+            cbar.set_label("Speed (km/h)")
+        else:
+            sc.set_offsets(np.column_stack([xs, ys]))
+            sc.set_array(tb_colors)
+            sc.set_norm(tb_norm)
+            sc.set_cmap(tb_cmap)
+            if cbar is not None:
+                try:
+                    cbar.remove()
+                except Exception:
+                    pass
+            cbar = fig.colorbar(sc, ax=ax, boundaries=tb_bounds, ticks=[0.5, 1.5, 2.5])
+            cbar.set_ticklabels(["None", "Throttle", "Brake"])
+            cbar.set_label("Throttle/Brake")
 
         # Update sections and title
         draw_sections(lap_pts)
         ax.set_title(f"Lap {lap}")
         lap_label.set_text(f"Lap {current_idx + 1}/{len(laps)}")
         fig.canvas.draw_idle()
+
+
+    # Mode toggle logic
+    def on_mode(event):
+        mode[0] = 1 - mode[0]
+        btn_mode.label.set_text(mode_names[mode[0]])
+        # Force full reload of current lap in new mode
+        update_to_index(current_idx, force=True)
+
+    btn_mode.on_clicked(on_mode)
 
     # Prev/Next buttons
     ax_prev = plt.axes([0.76, 0.12, 0.08, 0.05])

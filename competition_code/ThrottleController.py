@@ -3,6 +3,7 @@ import math
 from collections import deque
 from SpeedData import SpeedData
 import roar_py_interface
+from typing import List, Tuple
 
 
 def distance_p_to_p(
@@ -36,7 +37,7 @@ class ThrottleController:
 
     def run(
         self, waypoints, current_location, current_speed, current_section
-    ) -> (float, float, int):
+    ) -> Tuple[float, float, int]:
         self.tick_counter += 1
         throttle, brake = self.get_throttle_and_brake(
             current_location, current_speed, current_section, waypoints
@@ -287,7 +288,7 @@ class ThrottleController:
         return percent_speed_change < (-percent_change_per_tick / 2)
 
     # find speed_data with smallest recommended speed
-    def select_speed(self, speed_data: [SpeedData]):
+    def select_speed(self, speed_data: List[SpeedData]):
         """
         Selects the smallest speed out of the speeds provided
         """
@@ -370,11 +371,11 @@ class ThrottleController:
         self.dprint("wp dist " + str(dist))
         return points
 
-    def get_radius(self, wp: [roar_py_interface.RoarPyWaypoint]):
+    def get_radius(self, wp: List[roar_py_interface.RoarPyWaypoint]):
         """Returns the radius of a curve given 3 waypoints using the Menger Curvature Formula
 
         Args:
-            wp ([roar_py_interface.RoarPyWaypoint]): A list of 3 RoarPyWaypoints
+            wp (List[roar_py_interface.RoarPyWaypoint]): A list of 3 RoarPyWaypoints
 
         Returns:
             float: The radius of the curve made by the 3 given waypoints
@@ -423,6 +424,10 @@ class ThrottleController:
         if radius >= self.max_radius:
             return self.max_speed
 
+        if current_section == 0:
+            mu = 4
+        if current_section == 1:
+            mu = 2.75
         if current_section == 2:
             mu = 3.35
         if current_section == 3:

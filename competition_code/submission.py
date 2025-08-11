@@ -160,6 +160,7 @@ class RoarCompetitionSolution:
                 print(f"Section {i}: {self.num_ticks - self.section_start_ticks} ticks")
                 self.section_start_ticks = self.num_ticks
                 self.current_section = i
+
                 if self.current_section == 0 and self.lapNum != 3:
                     self.lapNum += 1
                     print(f"\nLap {self.lapNum}\n")
@@ -222,6 +223,9 @@ class RoarCompetitionSolution:
             debugData[self.num_ticks]["steer"] = round(float(control["steer"]), 10)
             debugData[self.num_ticks]["speed"] = round(current_speed_kmh, 3)
             debugData[self.num_ticks]["lap"] = self.lapNum
+            # Add section info per tick
+            debugData[self.num_ticks]["section"] = int(self.current_section)
+            debugData[self.num_ticks]["section_ticks"] = int(self.num_ticks - self.section_start_ticks)
 
             if useDebugPrinting and self.num_ticks % 5 == 0:
                 print(

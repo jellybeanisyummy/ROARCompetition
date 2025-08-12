@@ -27,6 +27,8 @@ class ThrottleController:
         self.tick_counter = 0
         self.previous_speed = 1.0
         self.brake_ticks = 0
+        # Last chosen recommended speed (km/h) from select_speed; used for debug logging
+        self.last_recommended_speed_kmh = None
 
         # for testing how fast the car stops
         self.brake_test_counter = 0
@@ -36,11 +38,11 @@ class ThrottleController:
         print("done")
 
     def run(
-        self, waypoints, current_location, current_speed, current_section
+        self, waypoints, current_location, current_speed, current_section_id
     ) -> Tuple[float, float, int]:
         self.tick_counter += 1
         throttle, brake = self.get_throttle_and_brake(
-            current_location, current_speed, current_section, waypoints
+            current_location, current_speed, current_section_id, waypoints
         )
         # gear = max(1, (int)(math.log(current_speed + 0.00001, 5)))
         gear = max(1, int(current_speed / 60))
@@ -60,38 +62,40 @@ class ThrottleController:
         return throttle, brake, gear
 
     def get_throttle_and_brake(
-        self, current_location, current_speed, current_section, waypoints
+        self, current_location, current_speed, current_section_id, waypoints
     ):
         """
         Returns throttle and brake values based off the car's current location and the radius of the approaching turn
         """
 
+        # 1) Pick representative lookahead waypoints (close/mid/far)
         nextWaypoint = self.get_next_interesting_waypoints(current_location, waypoints)
-        r1 = self.get_radius(nextWaypoint[self.close_index : self.close_index + 3])
-        r2 = self.get_radius(nextWaypoint[self.mid_index : self.mid_index + 3])
-        r3 = self.get_radius(nextWaypoint[self.far_index : self.far_index + 3])
 
-        target_speed1 = self.get_target_speed(r1, current_section)
-        target_speed2 = self.get_target_speed(r2, current_section)
-        target_speed3 = self.get_target_speed(r3, current_section)
+        # 2) Estimate radii from 3-point windows at close/mid/far lookaheads
+        r1 = self.get_radius(nextWaypoint[self.close_index : self.close_index + 3])  # close window
+        r2 = self.get_radius(nextWaypoint[self.mid_index : self.mid_index + 3])      # mid window
+        r3 = self.get_radius(nextWaypoint[self.far_index : self.far_index + 3])      # far window
 
+        # 3) Convert radii to section-aware target speeds
+        target_speed1 = self.get_target_speed(r1, current_section_id)  # for r1
+        target_speed2 = self.get_target_speed(r2, current_section_id)  # for r2
+        target_speed3 = self.get_target_speed(r3, current_section_id)  # for r3
+
+        # Distances to those lookaheads (+3 bias on close to react slightly earlier)
         close_distance = self.target_distance[self.close_index] + 3
         mid_distance = self.target_distance[self.mid_index]
         far_distance = self.target_distance[self.far_index]
-        speed_data = []
-        speed_data.append(
-            self.speed_for_turn(close_distance, target_speed1, current_speed)
-        )
-        speed_data.append(
-            self.speed_for_turn(mid_distance, target_speed2, current_speed)
-        )
-        speed_data.append(
-            self.speed_for_turn(far_distance, target_speed3, current_speed)
-        )
 
+        speed_data = []
+        # 4) Compute recommended "speed now" for each lookahead
+        speed_data.append(self.speed_for_turn(close_distance, target_speed1, current_speed))
+        speed_data.append(self.speed_for_turn(mid_distance, target_speed2, current_speed))
+        speed_data.append(self.speed_for_turn(far_distance, target_speed3, current_speed))
+
+        # 5) At high speeds, add wider-spaced checks to detect long, sweeping turns
         if current_speed > 100:
-            # at high speed use larger spacing between points to look further ahead and detect wide turns.
-            if current_section != 9:
+            # Skip this extra mid-spaced check in section 9 (track-specific tuning)
+            if current_section_id != 9:
                 r4 = self.get_radius(
                     [
                         nextWaypoint[self.mid_index],
@@ -99,11 +103,12 @@ class ThrottleController:
                         nextWaypoint[self.mid_index + 4],
                     ]
                 )
-                target_speed4 = self.get_target_speed(r4, current_section)
+                target_speed4 = self.get_target_speed(r4, current_section_id)
                 speed_data.append(
                     self.speed_for_turn(close_distance, target_speed4, current_speed)
                 )
 
+            # Wider spacing from close index as well (close, close+3, close+6)
             r5 = self.get_radius(
                 [
                     nextWaypoint[self.close_index],
@@ -111,13 +116,20 @@ class ThrottleController:
                     nextWaypoint[self.close_index + 6],
                 ]
             )
-            target_speed5 = self.get_target_speed(r5, current_section)
+            target_speed5 = self.get_target_speed(r5, current_section_id)
             speed_data.append(
                 self.speed_for_turn(close_distance, target_speed5, current_speed)
             )
 
+        # 6) Choose the most restrictive recommendation (slowest allowed now)
         update = self.select_speed(speed_data)
+        # Cache recommended speed for external logging (km/h)
+        try:
+            self.last_recommended_speed_kmh = float(update.recommended_speed_now)
+        except Exception:
+            self.last_recommended_speed_kmh = None
 
+        # 7) Debug print of per-lookahead recommended speeds and current speed
         self.print_speed(
             " -- SPEED: ",
             speed_data[0].recommended_speed_now,
@@ -127,6 +139,7 @@ class ThrottleController:
             current_speed,
         )
 
+        # 8) Map chosen recommendation to throttle/brake (considers recent speed and brake latch)
         throttle, brake = self.speed_data_to_throttle_and_brake(update)
         self.dprint("--- throt " + str(throttle) + " brake " + str(brake) + "---")
         return throttle, brake
@@ -146,17 +159,17 @@ class ThrottleController:
         true_percent_change_per_tick = round(
             avg_speed_change_per_tick / (speed_data.current_speed + 0.001), 5
         )
-        speed_up_threshold = 0.9
+        speed_up_threshold = 0.8        # changed from 0.9
         throttle_decrease_multiple = 0.7
         throttle_increase_multiple = 1.25
-        brake_threshold_multiplier = 1.0
+        brake_threshold_multiplier = 1.5        # changed from 1.0, won't break as much
         percent_speed_change = (speed_data.current_speed - self.previous_speed) / (
             self.previous_speed + 0.0001
         )  # avoid division by zero
         speed_change = round(speed_data.current_speed - self.previous_speed, 3)
 
         if percent_of_max > 1:
-            # Consider slowing down
+            # Consider slowing down because current speed > recommended speed
             # if speed_data.current_speed > 200:  # Brake earlier at higher speeds
             #     brake_threshold_multiplier = 0.9
 
@@ -236,7 +249,7 @@ class ThrottleController:
                 else:
                     # self.dprint("tb: tick " + str(self.tick_counter) + " brake: throttle maintain: sp_ch=" + str(percent_speed_change))
                     return throttle_to_maintain, 0
-        else:
+        else:       # if traveling slower than the recommended speed
             self.brake_ticks = 0  # done slowing down. clear brake_ticks
             # Speed up
             if speed_change >= 2.5:
@@ -408,36 +421,33 @@ class ThrottleController:
 
         return radius
 
-    def get_target_speed(self, radius: float, current_section: int):
-        """Returns a target speed based on the radius of the turn and the section it is in
+    def get_target_speed(self, radius: float, current_section_id: int):
+        """Returns a target speed based on the radius of the turn and the section (stable ID) it is in
 
         Args:
             radius (float): The calculated radius of the turn
-            current_section (int): The current section of the track the car is in
+            current_section_id (int): Stable section ID of the track the car is in
 
         Returns:
             float: The maximum speed the car can go around the corner at
         """
 
-        mu = 2.75
+        mu = 2.75       # base aggressiveness (bigger == more aggressive)
 
         if radius >= self.max_radius:
             return self.max_speed
 
-        if current_section == 0:
-            mu = 4
-        if current_section == 1:
-            mu = 2.75
-        if current_section == 2:
-            mu = 3.35
-        if current_section == 3:
-            mu = 3.3
-        if current_section == 4:
-            mu = 2.85
-        if current_section == 6:
-            mu = 3.3
-        if current_section == 9:
-            mu = 2.1
+        # Per-section tuning by stable ID (unchanged if you insert new physical sections)
+        mu_by_id = {
+            0: 4,
+            2: 3.35,
+            3: 3.3,
+            10: 4.0,
+            4: 2.85,
+            6: 3.3,
+            9: 2.2,     # changed from 2.1
+        }
+        mu = mu_by_id.get(current_section_id, mu)
 
         target_speed = math.sqrt(mu * 9.81 * radius) * 3.6
 

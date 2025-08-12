@@ -86,9 +86,13 @@ class RoarCompetitionSolution:
         self.lat_controller = LatController()
         self.throttle_controller = ThrottleController()
         self.section_indeces = []
+        # Stable section IDs aligned with section_indeces; use these for tuning so inserting sections doesn't shift behavior
+        self.section_ids = []
         self.num_ticks = 0
         self.section_start_ticks = 0
+        # current_section is the physical index into section_indeces (legacy); current_section_id is the stable ID
         self.current_section = 0
+        self.current_section_id = 0
         self.lapNum = 1
 
     async def initialize(self) -> None:
@@ -99,22 +103,41 @@ class RoarCompetitionSolution:
             )[35:]
         )
 
-        sectionLocations = [
-            [-278, 372], # Section 0 start location
-            [64, 890], # Section 1 start location
-            [511, 1037], # Section 2 start location
-            [762, 908], # Section 3 start location
-            [198, 307], # Section 4 start location
-            [-11, 60], # Section 5 start location
-            [-85, -339], # Section 6 start location
-            [-210, -1060], # Section 7 start location 
-            [-318, -991], # Section 8 start location
-            [-352, -119], # Section 9 start location
+        # Define sections with stable IDs. Keep these IDs unchanged even if you insert a new section later.
+        section_metadata = [
+            {"id": 0, "loc": [-278, 372]},   # Section 0 start location
+            {"id": 1, "loc": [64, 890]},    # Section 1 start location
+            {"id": 2, "loc": [511, 1037]},  # Section 2 start location
+            {"id": 3, "loc": [762, 908]},   # Section 3 start location
+            {"id": 10, "loc": [664, 667]}, # Section 10 start location (I added it)
+            {"id": 4, "loc": [198, 307]},   # Section 4 start location
+            {"id": 5, "loc": [-11, 60]},    # Section 5 start location
+            {"id": 6, "loc": [-85, -339]},  # Section 6 start location
+            {"id": 7, "loc": [-210, -1060]},# Section 7 start location 
+            {"id": 8, "loc": [-318, -991]}, # Section 8 start location
+            {"id": 9, "loc": [-352, -119]}, # Section 9 start location
         ]
-        for i in sectionLocations:
+
+        # for me testing lol
+        # sectionLocations = [
+        #     [-278, 372], # Section 0 start location
+        #     [-144, 847], # Section 1 start location
+        #     [256, 911], # Section 2 start location
+        #     [657, 1071], # Section 3 start location
+        #     [664, 667],  # I wanna add this but don't rly wanna change everything to match T_T
+        #     [710, 704], # Section 4 start location
+        #     [73, 204], # Section 5 start location
+        #     [-84, -216], # Section 6 start location
+        #     [-210, -1060], # Section 7 start location 
+        #     [-318, -991], # Section 8 start location
+        #     [-372, -619], # Section 9 start location
+        # ]
+        # Build section indices and stable IDs
+        for s in section_metadata:
             self.section_indeces.append(
-                findClosestIndex(i, self.maneuverable_waypoints)
+                findClosestIndex(np.array(s["loc"], dtype=float), self.maneuverable_waypoints)
             )
+            self.section_ids.append(int(s["id"]))
 
         print(f"True total length: {len(self.maneuverable_waypoints) * 3}")
         print(f"1 lap length: {len(self.maneuverable_waypoints)}")
@@ -160,8 +183,13 @@ class RoarCompetitionSolution:
                 print(f"Section {i}: {self.num_ticks - self.section_start_ticks} ticks")
                 self.section_start_ticks = self.num_ticks
                 self.current_section = i
+                # Set stable section ID for tuning/logic
+                if i < len(self.section_ids):
+                    self.current_section_id = self.section_ids[i]
+                else:
+                    self.current_section_id = i  # fallback
 
-                if self.current_section == 0 and self.lapNum != 3:
+                if self.current_section_id == 0 and self.lapNum != 3:
                     self.lapNum += 1
                     print(f"\nLap {self.lapNum}\n")
 
@@ -181,26 +209,27 @@ class RoarCompetitionSolution:
             waypoints_for_throttle,
             vehicle_location,
             current_speed_kmh,
-            self.current_section,
+            self.current_section_id,
         )
 
         steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)
         
-        if self.current_section == 2:
+        sid = self.current_section_id
+        if sid == 2:
             steerMultiplier *= 1.2
-        if self.current_section in [3]:
+        if sid in [3]:
             # steerMultiplier *= 0.9
             steerMultiplier = np.clip(steerMultiplier * 1.75, 2.3, 3.5)
-        if self.current_section == 4:
+        if sid == 4:
             steerMultiplier = min(1.45, steerMultiplier * 1.65)
-        if self.current_section == 5:
+        if sid == 5:
             steerMultiplier *= 1.1
-        if self.current_section in [6]:
+        if sid in [6]:
             # steerMultiplier = min(steerMultiplier * 5, 5.35)
             steerMultiplier = np.clip(steerMultiplier * 5.5, 5.5, 7)
-        if self.current_section == 7:
+        if sid == 7:
             steerMultiplier *= 2
-        if self.current_section == 9:
+        if sid == 9:
             steerMultiplier = max(steerMultiplier, 1.6)
 
         control = {
@@ -222,9 +251,17 @@ class RoarCompetitionSolution:
             debugData[self.num_ticks]["brake"] = round(float(control["brake"]), 3)
             debugData[self.num_ticks]["steer"] = round(float(control["steer"]), 10)
             debugData[self.num_ticks]["speed"] = round(current_speed_kmh, 3)
+            # The chosen recommended speed (km/h) from ThrottleController for this tick
+            rec_speed = self.throttle_controller.last_recommended_speed_kmh
+            if rec_speed is not None:
+                debugData[self.num_ticks]["recommended_speed"] = round(float(rec_speed), 3)
+            else:
+                debugData[self.num_ticks]["recommended_speed"] = None
             debugData[self.num_ticks]["lap"] = self.lapNum
             # Add section info per tick
             debugData[self.num_ticks]["section"] = int(self.current_section)
+            # Stable section ID that won't shift if you insert new sections
+            debugData[self.num_ticks]["section_id"] = int(self.current_section_id)
             debugData[self.num_ticks]["section_ticks"] = int(self.num_ticks - self.section_start_ticks)
 
             if useDebugPrinting and self.num_ticks % 5 == 0:
@@ -317,25 +354,26 @@ Steer: {control['steer']:.10f} \n"
         lookahead_value = self.get_lookahead_value(current_speed)
         num_points = lookahead_value * 2
 
-        # Section specific tuning
-        if self.current_section == 0:
+        # Section specific tuning (use stable section ID)
+        sid = self.current_section_id
+        if sid == 0:
             num_points = round(lookahead_value * 1.5)
-        if self.current_section == 3:
+        if sid == 3:
             next_waypoint_index = self.current_waypoint_idx + 22
             num_points = 35
-        if self.current_section == 4:
+        if sid == 4:
             num_points = lookahead_value + 5
             next_waypoint_index = self.current_waypoint_idx + 24
-        if self.current_section == 5:
+        if sid == 5:
             # num_points = round(lookahead_value * 1.1)
             num_points = lookahead_value
-        if self.current_section == 6:
+        if sid == 6:
             num_points = 5
             next_waypoint_index = self.current_waypoint_idx + 28
-        if self.current_section == 7:
+        if sid == 7:
             # Jolt between sections 6 and 7 likely due to the differences in lookahead values and steering multipliers. 
             num_points = round(lookahead_value * 1.25)
-        if self.current_section == 9:
+        if sid == 9:
             (self.current_waypoint_idx + 8) % len(self.maneuverable_waypoints)
             num_points = 0
 
@@ -359,7 +397,7 @@ Steer: {control['steer']:.10f} \n"
             new_location = location_sum / num_points
             shift_distance = np.linalg.norm(next_location - new_location)
             max_shift_distance = 2.0
-            if self.current_section == 1:
+            if sid == 1:
                 max_shift_distance = 0.2
             if shift_distance > max_shift_distance:
                 uv = (new_location - next_location) / shift_distance

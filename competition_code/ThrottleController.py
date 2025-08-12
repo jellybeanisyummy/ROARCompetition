@@ -510,10 +510,11 @@ class ThrottleController:
         # Per-section tuning by stable ID (unchanged if you insert new physical sections)
         mu_by_id = {
             0: 4,
-            2: 3.35,
-            3: 3.3,
+            2: 3.37,     # changed from 3.35
+            3: 3.35,
             10: 4.0,
             4: 2.85,
+            5: 2.9,
             6: 3.3,
             9: 2.2,     # changed from 2.1
         }

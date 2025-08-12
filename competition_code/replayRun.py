@@ -96,10 +96,49 @@ def main():
     # Continuous gradient between the six anchor colors
     cmap = mcolors.LinearSegmentedColormap.from_list("speed_grad", colors6, N=256)
 
-    # Throttle/Brake colormap: 0=none, 1=throttle, 2=brake
-    tb_cmap = mcolors.ListedColormap(["#cccccc", "#00cc44", "#cc2222"])
-    tb_bounds = [0, 1, 2, 3]
-    tb_norm = mcolors.BoundaryNorm(tb_bounds, tb_cmap.N)
+    # Combined throttle/brake scalar colormap where:
+    # 0.0 = None (gray)
+    # (0.0, 1/3] = Brake gradient (light gray -> red)
+    # (1/3, 1.0] = Throttle (solid green)
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # Updated colormap: 0 gray (none), 0->BRAKE_MAX_SCALAR brake gradient (gray->red), buffer (BRAKE_MAX_SCALAR->BUFFER_END) solid red, >BUFFER_END throttle solid green
+    BRAKE_MAX_SCALAR = 0.45    # scalar value that now represents 100% brake (moved down from 0.5)
+    BUFFER_END = 0.50          # small buffer zone to avoid boundary blending
+    THROTTLE_SCALAR_VALUE = 0.75
+
+    tb_cdict = {
+        'red':   [ (0.0, 0.80, 0.80),                 # gray start
+                   (BRAKE_MAX_SCALAR, 1.00, 1.00),     # full red at new 100% brake
+                   (BUFFER_END, 1.00, 1.00),           # keep red through buffer end
+                   (BUFFER_END + 0.0001, 0.00, 0.00),  # jump to green start
+                   (1.0, 0.00, 0.00) ],
+        'green': [ (0.0, 0.80, 0.80),
+                   (BRAKE_MAX_SCALAR, 0.00, 0.00),     # still red (no green) at full brake
+                   (BUFFER_END, 0.00, 0.00),
+                   (BUFFER_END + 0.0001, 0.80, 0.80),  # throttle solid green
+                   (1.0, 0.80, 0.80) ],
+        'blue':  [ (0.0, 0.80, 0.80),
+                   (BRAKE_MAX_SCALAR, 0.00, 0.00),
+                   (BUFFER_END, 0.00, 0.00),
+                   (BUFFER_END + 0.0001, 0.27, 0.27),  # green (#00cc44) blue component
+                   (1.0, 0.27, 0.27) ]
+    }
+    tb_scalar_cmap = LinearSegmentedColormap('tb_scalar_cmap', tb_cdict)
+
+    def encode_tb_scalar(throttle_val, brake_val):
+        # Clamp inputs
+        b = max(0.0, min(1.0, float(brake_val)))
+        t = max(0.0, min(1.0, float(throttle_val)))
+        if b > 0 and t == 0:
+            # Map brake (0..1) -> (0, BRAKE_MAX_SCALAR)
+            span = BRAKE_MAX_SCALAR - 0.002
+            return (b * span) + 0.001
+        if t > 0 and b == 0:
+            # Throttle fixed scalar
+            return THROTTLE_SCALAR_VALUE
+        # None
+        return 0.0
 
     current_idx = 0
     sec_markers = []
@@ -128,11 +167,8 @@ def main():
         return np.array(throttle), np.array(brake)
 
     # Helper to get tb_mode color array: 0=none, 1=throttle, 2=brake
-    def get_tb_colors(throttle, brake):
-        arr = np.zeros_like(throttle, dtype=int)
-        arr[throttle > 0] = 1
-        arr[brake > 0] = 2
-        return arr
+    def get_tb_scalars(throttle, brake):
+        return np.array([encode_tb_scalar(t, b) for t, b in zip(throttle, brake)])
 
     # Initialize with first lap
     init_lap = laps[current_idx]
@@ -141,13 +177,13 @@ def main():
     y_coords = np.array([p[2] for p in init_pts])
     speeds = np.array([p[3] for p in init_pts])
     throttle, brake = get_tb_arrays(init_pts, debug_dict)
-    tb_colors = get_tb_colors(throttle, brake)
+    tb_scalars = get_tb_scalars(throttle, brake)
 
     if speeds.size == 0:
         speeds = np.array([0.0])
         x_coords = np.array([0.0])
         y_coords = np.array([0.0])
-        tb_colors = np.array([0])
+        tb_scalars = np.array([0.0])
 
     boundaries, norm, ticks, labels = compute_boundaries(speeds)
     sc = ax.scatter(x_coords, y_coords, c=speeds, cmap=cmap, norm=norm, s=10)
@@ -293,12 +329,12 @@ def main():
         ys = np.array([p[2] for p in lap_pts])
         sp = np.array([p[3] for p in lap_pts])
         throttle, brake = get_tb_arrays(lap_pts, debug_dict)
-        tb_colors = get_tb_colors(throttle, brake)
+        tb_scalars = get_tb_scalars(throttle, brake)
         if sp.size == 0:
             xs = np.array([0.0])
             ys = np.array([0.0])
             sp = np.array([0.0])
-            tb_colors = np.array([0])
+            tb_scalars = np.array([0.0])
 
         # Update scatter data and colorbar depending on mode
         if mode[0] == 0:
@@ -318,17 +354,19 @@ def main():
             cbar.set_label("Speed (km/h)")
         else:
             sc.set_offsets(np.column_stack([xs, ys]))
-            sc.set_array(tb_colors)
-            sc.set_norm(tb_norm)
-            sc.set_cmap(tb_cmap)
+            sc.set_array(tb_scalars)
+            sc.set_cmap(tb_scalar_cmap)
+            sc.set_norm(mcolors.Normalize(vmin=0.0, vmax=1.0))
             if cbar is not None:
                 try:
                     cbar.remove()
                 except Exception:
                     pass
-            cbar = fig.colorbar(sc, ax=ax, boundaries=tb_bounds, ticks=[0.5, 1.5, 2.5])
-            cbar.set_ticklabels(["None", "Throttle", "Brake"])
-            cbar.set_label("Throttle/Brake")
+            # Colorbar with brake occupying first third
+            cbar = fig.colorbar(sc, ax=ax)
+            cbar.set_ticks([0.0, BRAKE_MAX_SCALAR/2, BRAKE_MAX_SCALAR, THROTTLE_SCALAR_VALUE])
+            cbar.set_ticklabels(["None", "Brake 50%", "Brake 100%", "Throttle"])
+            cbar.set_label(f"Brake (0-{BRAKE_MAX_SCALAR}) / Throttle (>{BUFFER_END})")
 
         # Update sections and title
         draw_sections(lap_pts)

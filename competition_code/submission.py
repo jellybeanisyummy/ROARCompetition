@@ -307,7 +307,7 @@ Steer: {control['steer']:.10f} \n"
 
         for speed_upper_bound, num_points in speed_to_lookahead_dict.items():
             if speed < speed_upper_bound:
-                return num_points
+                return num_points       # number of waypoints to look ahead by
         return 8
 
     def get_lookahead_index(self, speed):

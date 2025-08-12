@@ -148,6 +148,75 @@ class ThrottleController:
         """
         Converts speed data into throttle and brake values
         """
+        # Trail braking (sections 1,4,6,9) with hysteresis, proportional+derivative, and max continuous window
+        # Suggestion 1: hysteresis (separate start/stop thresholds)
+        # Suggestion 2: proportional brake based on overspeed error
+        # Suggestion 3: derivative relief if already decelerating fast
+        # Suggestion 4: max continuous brake ticks safety release
+        if not hasattr(self, 'trail_brake_active'):     # adding more attributes
+            self.trail_brake_active = False
+            self.trail_brake_ticks = 0
+            self.filtered_recommended = None
+
+        trail_brake_sections = {1, 4, 6, 9}
+        section_id = getattr(speed_data, 'current_section_id', None)
+        if section_id in trail_brake_sections:
+            # Filter (low-pass) the recommended speed to avoid jitter triggering brakes repeatedly
+            raw_rec = speed_data.recommended_speed_now
+            if self.filtered_recommended is None:
+                self.filtered_recommended = raw_rec
+            else:
+                self.filtered_recommended = 0.7 * self.filtered_recommended + 0.3 * raw_rec
+
+            recommended = self.filtered_recommended
+            percent_of_max = speed_data.current_speed / (recommended + 1e-6)
+            overspeed_error = max(0.0, percent_of_max - 1.0)
+
+            BRAKE_START = 1.03   # start hysteresis threshold
+            BRAKE_STOP = 0.995   # release threshold
+            MAX_CONTINUOUS_BRAKE = 12
+            TARGET_DECEL_PER_TICK = 2.2  # kph per tick desired heavy braking
+            K_ERROR = 8.0         # scales overspeed error to brake
+            K_DECEL = 0.2         # adds extra if not decelerating fast enough
+
+            # Activation / deactivation of trail brake state
+            if not self.trail_brake_active:
+                if percent_of_max >= BRAKE_START:
+                    self.trail_brake_active = True
+                    self.trail_brake_ticks = 0
+            else:
+                if percent_of_max <= BRAKE_STOP or overspeed_error < 0.005:
+                    self.trail_brake_active = False
+
+            if self.trail_brake_active:
+                self.trail_brake_ticks += 1
+                actual_decel = self.previous_speed - speed_data.current_speed  # kph per tick (positive when slowing)
+                decel_deficit = max(0.0, TARGET_DECEL_PER_TICK - actual_decel)
+                # Base proportional brake
+                brake_amount = K_ERROR * overspeed_error
+                # Add deficit term
+                brake_amount += K_DECEL * decel_deficit
+                # Derivative relief (already decelerating strongly)
+                if actual_decel > TARGET_DECEL_PER_TICK * 1.1:
+                    brake_amount *= 0.5
+                # Taper near release band
+                if percent_of_max < 1.01:
+                    # scale down smoothly as we approach BRAKE_STOP
+                    denom = (1.01 - BRAKE_STOP + 1e-6)
+                    brake_amount *= max(0.0, (percent_of_max - BRAKE_STOP) / denom)
+                brake_amount = max(0.0, min(1.0, brake_amount))
+                # Max continuous safety release
+                if self.trail_brake_ticks > MAX_CONTINUOUS_BRAKE and overspeed_error < 0.02:
+                    self.trail_brake_active = False
+                    return 0.0, 0.0
+                if brake_amount < 0.03:
+                    # Too small to matter; release
+                    self.trail_brake_active = False
+                    return 1.0, 0.0
+                return 0.0, brake_amount
+            else:
+                # Accelerate / neutral outside brake state
+                return 1.0, 0.0
 
         # self.dprint("dist=" + str(round(speed_data.distance_to_section)) + " cs=" + str(round(speed_data.current_speed, 2))
         #             + " ts= " + str(round(speed_data.target_speed_at_distance, 2))
@@ -216,7 +285,7 @@ class ThrottleController:
                     )
                     self.brake_ticks = 0  # done slowing down. clear brake_ticks
                     return 1, 0
-            else:
+            else:       # not SUPER over speed scenario
                 if speed_change >= 2.5:
                     # speed is already dropping fast, ok to throttle because the effect of throttle is delayed
                     self.dprint(
@@ -235,7 +304,7 @@ class ThrottleController:
 
                 if percent_of_max > 1.02 or percent_speed_change > (
                     -true_percent_change_per_tick / 2
-                ):
+                ):      # just a bit over, still use throttle but gentler throttle
                     self.dprint(
                         "tb: tick "
                         + str(self.tick_counter)
@@ -249,7 +318,7 @@ class ThrottleController:
                 else:
                     # self.dprint("tb: tick " + str(self.tick_counter) + " brake: throttle maintain: sp_ch=" + str(percent_speed_change))
                     return throttle_to_maintain, 0
-        else:       # if traveling slower than the recommended speed
+        else:       # if must speed up to reach recommended speed
             self.brake_ticks = 0  # done slowing down. clear brake_ticks
             # Speed up
             if speed_change >= 2.5:
@@ -273,6 +342,7 @@ class ThrottleController:
                 speed_data.current_speed
             )
             if percent_of_max < 0.98 or true_percent_change_per_tick < -0.01:
+                # too slow or got slower
                 self.dprint(
                     "tb: tick "
                     + str(self.tick_counter)

@@ -173,12 +173,12 @@ class ThrottleController:
             percent_of_max_tb = speed_data.current_speed / (recommended + 1e-6)
             overspeed_error_tb = max(0.0, percent_of_max_tb - 1.0)
 
-            BRAKE_START = 1.2
-            BRAKE_STOP = 0.95
+            BRAKE_START = 1.3
+            BRAKE_STOP = 0.8
             TARGET_DECEL_PER_TICK = 2.8
             K_ERROR = 8.0       # initial brake for a given overspeed
             K_DECEL = 0.3       # additional brake for each tick of overspeed
-            MAX_CONTINUOUS_BRAKE = 15
+            MAX_CONTINUOUS_BRAKE = 20
             # Immediate activation: enter trail braking as soon as threshold exceeded
             if not self.trail_brake_active and percent_of_max_tb >= BRAKE_START:
                 self.trail_brake_active = True
@@ -448,7 +448,7 @@ class ThrottleController:
         # Per-section tuning by stable ID (unchanged if you insert new physical sections)
         mu_by_id = {
             0: 4,
-            1: 2.75,
+            # 1: 2.75,
             2: 3.37,     # changed from 3.35
             3: 3.35,
             10: 4.0,

@@ -215,6 +215,8 @@ class RoarCompetitionSolution:
         steerMultiplier = round((current_speed_kmh + 0.001) / 120, 3)
         
         sid = self.current_section_id
+        if sid == 1:
+            steerMultiplier *= 0.8
         if sid == 2:
             steerMultiplier *= 1.2
         if sid in [3]:
@@ -263,6 +265,15 @@ class RoarCompetitionSolution:
             # Stable section ID that won't shift if you insert new sections
             debugData[self.num_ticks]["section_id"] = int(self.current_section_id)
             debugData[self.num_ticks]["section_ticks"] = int(self.num_ticks - self.section_start_ticks)
+            # Trail brake delay / activation debug (if available)
+            tb_dbg = self.throttle_controller.get_trail_brake_debug()
+            if tb_dbg:
+                debugData[self.num_ticks]["trail_brake"] = {
+                    'active': tb_dbg.get('active'),
+                    'percent_of_max': tb_dbg.get('percent_of_max'),
+                    'overspeed_error': tb_dbg.get('overspeed_error'),
+                    'brake_amount': tb_dbg.get('brake_amount'),
+                }
 
             if useDebugPrinting and self.num_ticks % 5 == 0:
                 print(

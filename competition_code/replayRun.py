@@ -102,27 +102,44 @@ def main():
     # (1/3, 1.0] = Throttle (solid green)
     from matplotlib.colors import LinearSegmentedColormap
 
-    # Updated colormap: 0 gray (none), 0->BRAKE_MAX_SCALAR brake gradient (gray->red), buffer (BRAKE_MAX_SCALAR->BUFFER_END) solid red, >BUFFER_END throttle solid green
+    # Updated colormap:
+    #   0          : gray (no input / none)
+    #   (0 .. BRAKE_MAX_SCALAR] : visual brake gradient BUT now represents ACTUAL 50%..100% brake
+    #       (we clamp any real brake < 0.5 to display as 0.5 so light red means ">=50% brake")
+    #   (BRAKE_MAX_SCALAR .. BUFFER_END] : solid full red buffer
+    #   > BUFFER_END : throttle (solid green)
     BRAKE_MAX_SCALAR = 0.45    # scalar value that now represents 100% brake (moved down from 0.5)
     BUFFER_END = 0.50          # small buffer zone to avoid boundary blending
     THROTTLE_SCALAR_VALUE = 0.75
 
+    # Brake gradient updated: yellow -> orange -> red across 50%-100% brake (no gray); throttle stays green.
+    # Define intermediate scalar for orange within brake range.
+    MID_BRAKE_SCALAR = BRAKE_MAX_SCALAR * 0.55  # position for orange (between yellow start and red end)
     tb_cdict = {
-        'red':   [ (0.0, 0.80, 0.80),                 # gray start
-                   (BRAKE_MAX_SCALAR, 1.00, 1.00),     # full red at new 100% brake
-                   (BUFFER_END, 1.00, 1.00),           # keep red through buffer end
-                   (BUFFER_END + 0.0001, 0.00, 0.00),  # jump to green start
-                   (1.0, 0.00, 0.00) ],
-        'green': [ (0.0, 0.80, 0.80),
-                   (BRAKE_MAX_SCALAR, 0.00, 0.00),     # still red (no green) at full brake
-                   (BUFFER_END, 0.00, 0.00),
-                   (BUFFER_END + 0.0001, 0.80, 0.80),  # throttle solid green
-                   (1.0, 0.80, 0.80) ],
-        'blue':  [ (0.0, 0.80, 0.80),
-                   (BRAKE_MAX_SCALAR, 0.00, 0.00),
-                   (BUFFER_END, 0.00, 0.00),
-                   (BUFFER_END + 0.0001, 0.27, 0.27),  # green (#00cc44) blue component
-                   (1.0, 0.27, 0.27) ]
+        'red': [
+            (0.0, 1.00, 1.00),              # start yellow (R=1)
+            (MID_BRAKE_SCALAR, 1.00, 1.00), # stays full red component through orange
+            (BRAKE_MAX_SCALAR, 1.00, 1.00), # red end
+            (BUFFER_END, 1.00, 1.00),       # keep red until buffer end
+            (BUFFER_END + 0.0001, 0.00, 0.00), # jump to green
+            (1.0, 0.00, 0.00)
+        ],
+        'green': [
+            (0.0, 1.00, 1.00),              # start yellow (G=1)
+            (MID_BRAKE_SCALAR, 0.50, 0.50), # orange midpoint
+            (BRAKE_MAX_SCALAR, 0.00, 0.00), # red (no green)
+            (BUFFER_END, 0.00, 0.00),       # stay red
+            (BUFFER_END + 0.0001, 0.80, 0.80), # throttle solid green
+            (1.0, 0.80, 0.80)
+        ],
+        'blue': [
+            (0.0, 0.00, 0.00),              # yellow (no blue)
+            (MID_BRAKE_SCALAR, 0.00, 0.00), # orange (still no blue)
+            (BRAKE_MAX_SCALAR, 0.00, 0.00), # red
+            (BUFFER_END, 0.00, 0.00),       # stay red
+            (BUFFER_END + 0.0001, 0.27, 0.27), # green's blue component
+            (1.0, 0.27, 0.27)
+        ]
     }
     tb_scalar_cmap = LinearSegmentedColormap('tb_scalar_cmap', tb_cdict)
 
@@ -131,9 +148,16 @@ def main():
         b = max(0.0, min(1.0, float(brake_val)))
         t = max(0.0, min(1.0, float(throttle_val)))
         if b > 0 and t == 0:
-            # Map brake (0..1) -> (0, BRAKE_MAX_SCALAR)
+            # Display gradient only for actual 50%..100% brake.
+            # Anything below 0.5 is shown as 0.5 (minimum visible braking color).
+            if b < 0.5:
+                b_eff = 0.5
+            else:
+                b_eff = b
+            # Normalize b_eff from [0.5,1.0] -> [0,1]
+            norm = (b_eff - 0.5) / 0.5
             span = BRAKE_MAX_SCALAR - 0.002
-            return (b * span) + 0.001
+            return (norm * span) + 0.001
         if t > 0 and b == 0:
             # Throttle fixed scalar
             return THROTTLE_SCALAR_VALUE
@@ -364,9 +388,12 @@ def main():
                     pass
             # Colorbar with brake occupying first third
             cbar = fig.colorbar(sc, ax=ax)
-            cbar.set_ticks([0.0, BRAKE_MAX_SCALAR/2, BRAKE_MAX_SCALAR, THROTTLE_SCALAR_VALUE])
-            cbar.set_ticklabels(["None", "Brake 50%", "Brake 100%", "Throttle"])
-            cbar.set_label(f"Brake (0-{BRAKE_MAX_SCALAR}) / Throttle (>{BUFFER_END})")
+            # Ticks: start of gradient (50%), mid (~75%), full (100%), throttle
+            mid_scalar = BRAKE_MAX_SCALAR / 2
+            cbar.set_ticks([0.0, 0.0005 + 0.0, mid_scalar, BRAKE_MAX_SCALAR, THROTTLE_SCALAR_VALUE])
+            # Removed the 'None' label (blank string for first tick)
+            cbar.set_ticklabels(["", "Brake 50%", "Brake 75%", "Brake 100%", "Throttle"])
+            cbar.set_label(f"Brake (50%-100%) mapped to 0-{BRAKE_MAX_SCALAR}; Throttle > {BUFFER_END}")
 
         # Update sections and title
         draw_sections(lap_pts)

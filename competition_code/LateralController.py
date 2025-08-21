@@ -35,7 +35,7 @@ class LatController:
             math.atan2(waypoint_vector_normalized[1], waypoint_vector_normalized[0])
         )
 
-        steering_command = 1.5 * math.atan2(
+        steering_command = 1.50 * math.atan2(
             2.0 * 4.7 * math.sin(alpha) / distance_to_waypoint, 1.0
         )
 

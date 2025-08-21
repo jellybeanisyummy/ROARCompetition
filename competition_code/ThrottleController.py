@@ -172,7 +172,7 @@ class ThrottleController:
             percent_of_max = speed_data.current_speed / (recommended + 1e-6)
             overspeed_error = max(0.0, percent_of_max - 1.0)
 
-            BRAKE_START = 1.03   # start hysteresis threshold
+            BRAKE_START = 1.035   # start hysteresis threshold (slightly later)
             BRAKE_STOP = 0.995   # release threshold
             MAX_CONTINUOUS_BRAKE = 12
             TARGET_DECEL_PER_TICK = 2.2  # kph per tick desired heavy braking
@@ -228,10 +228,10 @@ class ThrottleController:
         true_percent_change_per_tick = round(
             avg_speed_change_per_tick / (speed_data.current_speed + 0.001), 5
         )
-        speed_up_threshold = 0.8        # changed from 0.9
+        speed_up_threshold = 0.78        # slightly more eager to accelerate
         throttle_decrease_multiple = 0.7
-        throttle_increase_multiple = 1.25
-        brake_threshold_multiplier = 1.5        # changed from 1.0, won't break as much
+        throttle_increase_multiple = 1.3
+        brake_threshold_multiplier = 1.65        # brake a bit later to carry more speed
         percent_speed_change = (speed_data.current_speed - self.previous_speed) / (
             self.previous_speed + 0.0001
         )  # avoid division by zero
@@ -410,7 +410,7 @@ class ThrottleController:
         # Takes in a target speed and distance and produces a speed that the car should target. Returns a SpeedData object
 
         d = (1 / 675) * (target_speed**2) + distance
-        max_speed = math.sqrt(825 * d)
+        max_speed = math.sqrt(850 * d)
         return SpeedData(distance, current_speed, target_speed, max_speed)
 
     def get_next_interesting_waypoints(self, current_location, more_waypoints):
@@ -502,21 +502,21 @@ class ThrottleController:
             float: The maximum speed the car can go around the corner at
         """
 
-        mu = 2.75       # base aggressiveness (bigger == more aggressive)
+        mu = 2.85       # base aggressiveness (bigger == more aggressive)
 
         if radius >= self.max_radius:
             return self.max_speed
 
         # Per-section tuning by stable ID (unchanged if you insert new physical sections)
         mu_by_id = {
-            0: 4,
-            2: 3.37,     # changed from 3.35
-            3: 3.35,
-            10: 4.0,
-            4: 2.85,
-            5: 2.9,
-            6: 3.3,
-            9: 2.2,     # changed from 2.1
+            0: 4.25,
+            2: 3.6,
+            3: 3.55,
+            10: 4.2,
+            4: 3.1,
+            5: 3.15,
+            6: 3.5,
+            9: 2.4,
         }
         mu = mu_by_id.get(current_section_id, mu)
 
